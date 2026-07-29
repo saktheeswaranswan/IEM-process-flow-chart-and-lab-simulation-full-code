@@ -1,0 +1,499 @@
+// =====================================================================
+// STANDARD TIME & MACHINING SIMULATOR (LATHE OPERATION)
+// Features: 3D Stickman Walking & Working Animation, Distance Tracking,
+//           Dynamic Formula Calculations, and Notebook Tabulation Matrix.
+// =====================================================================
+
+int currentMode = 1; // 1: 3D Sim, 2: Tabulation, 3: Formulas
+float totalDistanceWalked = 0;
+float totalTimeSpent = 0;
+boolean isSimulating = false;
+boolean isComplete = false;
+
+ArrayList<Machine> machines = new ArrayList<Machine>();
+ArrayList<Operation> operations = new ArrayList<Operation>();
+Worker stickman;
+
+// Camera System
+PVector camEye, camTarget;
+PVector currentCamEye, currentCamTarget;
+
+// Constants from Notebook (V = 30 m/min, f = 0.3 mm/rev)
+float V = 30.0;
+float f = 0.3;
+float perfRating = 110.0; // Assume 110% rating for Basic Time
+float allowance = 0.15;   // Assume 15% allowance
+
+void setup() {
+  size(1280, 720, P3D);
+  setWindowFrameTitle("Machining Standard Time Simulator");
+  
+  camEye = new PVector(0, -800, 900);
+  camTarget = new PVector(0, 0, 0);
+  currentCamEye = camEye.copy();
+  currentCamTarget = camTarget.copy();
+  
+  loadOperationsData();
+  buildEnvironment();
+}
+
+void draw() {
+  background(20, 25, 35);
+  
+  if (currentMode == 1) {
+    // --- 3D ENVIRONMENT RENDERING ---
+    currentCamEye.lerp(camEye, 0.05);
+    currentCamTarget.lerp(camTarget, 0.05);
+    
+    camera(currentCamEye.x, currentCamEye.y, currentCamEye.z,
+           currentCamTarget.x, currentCamTarget.y, currentCamTarget.z,
+           0, 1, 0);
+           
+    ambientLight(150, 150, 150);
+    directionalLight(255, 255, 255, 0.5, 1, -0.5);
+    pointLight(200, 220, 255, 0, -500, 0);
+    
+    drawFloor();
+    for (Machine m : machines) m.draw();
+    
+    if (isSimulating) {
+      stickman.update();
+    }
+    stickman.draw();
+  }
+  
+  // --- 2D OVERLAYS & UI ---
+  hint(DISABLE_DEPTH_TEST);
+  camera(); 
+  noLights();
+  
+  if (currentMode == 1) {
+    drawHUD();
+  } else if (currentMode == 2) {
+    drawTabulationScreen();
+  } else if (currentMode == 3) {
+    drawFormulaScreen();
+  }
+  
+  hint(ENABLE_DEPTH_TEST);
+}
+
+// =========================================================
+// INPUT & NAVIGATION
+// =========================================================
+
+void mousePressed() {
+  // Top Navigation Tabs
+  if (checkBtn(20, 20, 180, 45)) currentMode = 1;
+  if (checkBtn(210, 20, 180, 45)) currentMode = 2;
+  if (checkBtn(400, 20, 180, 45)) currentMode = 3;
+  
+  // Simulation Controls (Mode 1)
+  if (currentMode == 1) {
+    if (checkBtn(20, height - 70, 150, 45)) {
+      isSimulating = true;
+    }
+    if (checkBtn(180, height - 70, 150, 45)) {
+      buildEnvironment(); // Reset
+    }
+  }
+}
+
+boolean checkBtn(float x, float y, float w, float h) {
+  return mouseX >= x && mouseX <= x + w && mouseY >= y && mouseY <= y + h;
+}
+
+// =========================================================
+// UI, HUD & 2D SCREENS
+// =========================================================
+
+void drawHUD() {
+  fill(30, 40, 50, 230); noStroke();
+  rect(0, 0, width, 85);
+  
+  drawButton(20, 20, 180, 45, "1. 3D Simulation", currentMode == 1 ? color(0, 150, 200) : color(80));
+  drawButton(210, 20, 180, 45, "2. Tabulation", currentMode == 2 ? color(0, 150, 200) : color(80));
+  drawButton(400, 20, 180, 45, "3. Formulas", currentMode == 3 ? color(0, 150, 200) : color(80));
+  
+  fill(255); textAlign(RIGHT, CENTER); textSize(20);
+  text("STANDARD TIME CALCULATION", width - 30, 42);
+  
+  // Status Bar
+  fill(20, 25, 30, 200); rect(0, height - 90, width, 90);
+  
+  drawButton(20, height - 70, 150, 45, isSimulating ? "RUNNING..." : "START SIM", color(40, 160, 90));
+  drawButton(180, height - 70, 150, 45, "RESET", color(200, 80, 50));
+  
+  fill(0, 255, 150); textAlign(LEFT, CENTER); textSize(18);
+  text("Distance Walked: " + nf(totalDistanceWalked, 0, 1) + " meters", 350, height - 65);
+  text("Total Machining Time: " + nf(totalTimeSpent, 0, 3) + " min", 350, height - 40);
+  
+  fill(255, 200, 0); textSize(22);
+  text("Status: " + stickman.statusMsg, 650, height - 52);
+}
+
+void drawTabulationScreen() {
+  background(245, 250, 255);
+  drawHUD(); 
+  
+  fill(30); textAlign(CENTER, TOP); textSize(26);
+  text("TABULATION : OBSERVED TIME (MACHINING TIME)", width/2, 110);
+  textSize(16); fill(100, 50, 50);
+  text("Assume: Cutting Speed V = 30 m/min, Feed f = 0.3 mm/rev, Depth of cut d = 2mm", width/2, 145);
+  
+  float tX = 50; float tY = 180;
+  float tW = width - 100; float tH = 450;
+  
+  stroke(0); strokeWeight(2); fill(255);
+  rect(tX, tY, tW, tH);
+  
+  // Headers
+  fill(220, 230, 240); rect(tX, tY, tW, 60);
+  fill(0); textAlign(CENTER, CENTER); textSize(14);
+  float[] colW = {0.2, 0.1, 0.12, 0.12, 0.1, 0.15, 0.21};
+  float cX = tX;
+  
+  String[] headers = {"Operation", "Length\nL (mm)", "Average\ndiameter\nD (mm)", "Change in\nDiameter\n(mm)", "No. of\npasses", "Spindle\nSpeed\nN (rpm)", "Observed\ntime (min)"};
+  
+  for(int i=0; i<headers.length; i++) {
+    float w = tW * colW[i];
+    text(headers[i], cX + w/2, tY + 30);
+    line(cX, tY, cX, tY + tH);
+    cX += w;
+  }
+  line(tX+tW, tY, tX+tW, tY+tH);
+  line(tX, tY+60, tX+tW, tY+60);
+  
+  // Data Rows
+  float rowH = (tH - 60) / 7.0;
+  float totalObsTime = 0;
+  
+  for(int i=0; i<operations.size(); i++) {
+    Operation op = operations.get(i);
+    float y = tY + 60 + (i * rowH);
+    line(tX, y, tX + tW, y);
+    
+    cX = tX;
+    fill(0);
+    text(op.name, cX + (tW*colW[0])/2, y + rowH/2); cX += tW*colW[0];
+    text(op.L > 0 ? str(op.L) : "-", cX + (tW*colW[1])/2, y + rowH/2); cX += tW*colW[1];
+    text(op.D > 0 ? nf(op.D, 0, 1) : "-", cX + (tW*colW[2])/2, y + rowH/2); cX += tW*colW[2];
+    text(op.changeD > 0 ? str(op.changeD) : "-", cX + (tW*colW[3])/2, y + rowH/2); cX += tW*colW[3];
+    text(op.passes > 0 ? str(op.passes) : "-", cX + (tW*colW[4])/2, y + rowH/2); cX += tW*colW[4];
+    text(op.N > 0 ? str(round(op.N)) : "-", cX + (tW*colW[5])/2, y + rowH/2); cX += tW*colW[5];
+    
+    fill(200, 50, 50);
+    text(nf(op.obsTime, 0, 3), cX + (tW*colW[6])/2, y + rowH/2);
+    totalObsTime += op.obsTime;
+  }
+  
+  // Total Row
+  float y = tY + 60 + (6 * rowH);
+  line(tX, y, tX + tW, y);
+  fill(0); textAlign(RIGHT, CENTER); textSize(18);
+  text("Total Machining Time: ", tX + tW - (tW*colW[6]) - 20, y + rowH/2);
+  fill(200, 50, 50); textAlign(CENTER, CENTER);
+  text(nf(totalObsTime, 0, 3), tX + tW - (tW*colW[6])/2, y + rowH/2);
+}
+
+void drawFormulaScreen() {
+  background(240, 245, 250);
+  drawHUD();
+  
+  fill(30); textAlign(CENTER, TOP); textSize(26);
+  text("MODEL CALCULATION & FORMULAS", width/2, 110);
+  
+  float boxX = width/2 - 450;
+  float boxY = 160;
+  
+  fill(255); stroke(150); strokeWeight(2);
+  rect(boxX, boxY, 900, 500, 10);
+  
+  fill(0); textAlign(LEFT, TOP); textSize(18);
+  text("1. Spindle Speed (N)", boxX + 40, boxY + 30);
+  fill(50, 100, 200); textSize(16);
+  text("Formula: N = (1000 × V) / (π × D)", boxX + 40, boxY + 60);
+  fill(100);
+  text("Where: V = Cutting Speed (30 m/min), D = Average Diameter (mm)", boxX + 40, boxY + 85);
+  
+  fill(0); textSize(18);
+  text("2. Machining Time (T) per pass", boxX + 40, boxY + 140);
+  fill(50, 100, 200); textSize(16);
+  text("Formula: T = L / (f × N)", boxX + 40, boxY + 170);
+  fill(100);
+  text("Where: L = Length (mm), f = Feed rate (0.3 mm/rev), N = Spindle Speed", boxX + 40, boxY + 195);
+  text("Total Observed Time = T × Number of passes", boxX + 40, boxY + 220);
+  
+  fill(0); textSize(18);
+  text("3. Example Calculation (Turning Ø29 -> Ø24):", boxX + 40, boxY + 270);
+  fill(0, 150, 50); textSize(16);
+  text("• Average D = (29 + 24) / 2 = 26.5 mm\n" +
+       "• N = (1000 × 30) / (3.1416 × 26.5) = 360.3 rpm\n" +
+       "• Machining Time (1 pass) = 10 / (0.3 × 360.3) = 0.0925 min\n" +
+       "• Total Time (2 passes) = 0.0925 × 2 = 0.185 min", boxX + 60, boxY + 300);
+       
+  fill(0); textSize(18);
+  text("4. Final Standard Time", boxX + 40, boxY + 400);
+  fill(200, 50, 50); textSize(16);
+  text("Basic Time = Total Observed Time × (Performance Rating / 100)", boxX + 40, boxY + 430);
+  text("Standard Time = Basic Time × (1 + Allowance Percentage)", boxX + 40, boxY + 455);
+}
+
+void drawButton(float x, float y, float w, float h, String label, color bg) {
+  fill(bg); stroke(255); strokeWeight(2);
+  rect(x, y, w, h, 8);
+  fill(255); textAlign(CENTER, CENTER); textSize(16);
+  text(label, x + w/2, y + h/2 - 2);
+}
+
+// =========================================================
+// DATA MATH & LOGIC
+// =========================================================
+
+class Operation {
+  String name;
+  float L, D, changeD;
+  int passes;
+  float N, obsTime;
+  
+  Operation(String _name, float _L, float _d1, float _d2, int _passes, float overrideTime) {
+    name = _name; L = _L; passes = _passes;
+    if (_d1 > 0 && _d2 > 0) {
+      D = (_d1 + _d2) / 2.0;
+      changeD = _d1 - _d2;
+      N = (1000.0 * V) / (PI * D);
+      float tPerPass = L / (f * N);
+      obsTime = tPerPass * passes;
+    } else {
+      D = 0; changeD = 0; N = 0;
+      obsTime = overrideTime; // For Facing / Chamfering
+    }
+  }
+}
+
+void loadOperationsData() {
+  operations.clear();
+  // Data transcribed from notebook image 64148.jpg
+  operations.add(new Operation("Turning Ø29 -> Ø24", 10, 29, 24, 2, 0));
+  operations.add(new Operation("Turning Ø29 -> Ø25", 50, 29, 25, 1, 0));
+  operations.add(new Operation("Turning Ø25 -> Ø20", 25, 25, 20, 2, 0));
+  operations.add(new Operation("Taper Turning Ø29 -> Ø25", 15, 29, 25, 2, 0));
+  operations.add(new Operation("Facing (2 sides)", 0, 0, 0, 0, 0.170));
+  operations.add(new Operation("Chamfering (2 sides)", 0, 0, 0, 0, 0.170));
+}
+
+// =========================================================
+// 3D SIMULATION ENTITIES
+// =========================================================
+
+void buildEnvironment() {
+  machines.clear();
+  totalDistanceWalked = 0;
+  totalTimeSpent = 0;
+  isSimulating = false;
+  isComplete = false;
+  
+  machines.add(new Machine(-400, 0, PI/2, "Storage"));
+  machines.add(new Machine(0, 0, PI/2, "Lathe Machine"));
+  machines.add(new Machine(400, 0, PI/2, "Inspection"));
+  
+  stickman = new Worker(machines.get(0).opX, machines.get(0).opZ);
+  camEye.set(0, -600, 800);
+}
+
+void drawFloor() {
+  pushMatrix(); rotateX(HALF_PI);
+  fill(45, 55, 65); noStroke();
+  rectMode(CENTER); rect(0, 0, 2000, 1000);
+  stroke(60); strokeWeight(2);
+  for(float i = -1000; i <= 1000; i += 100) {
+    line(i, -500, i, 500); line(-1000, i/2, 1000, i/2);
+  }
+  popMatrix(); rectMode(CORNER);
+}
+
+class Machine {
+  float x, z, rot;
+  float opX, opZ; 
+  String type;
+  
+  Machine(float _x, float _z, float _rot, String _type) {
+    x = _x; z = _z; rot = _rot; type = _type;
+    opX = x + sin(rot) * 120;
+    opZ = z + cos(rot) * 120;
+  }
+  
+  void draw() {
+    pushMatrix(); translate(x, 0, z); rotateY(rot);
+    stroke(30); strokeWeight(1);
+    
+    if (type.equals("Storage")) {
+      fill(80, 90, 100); translate(0, -50, 0);
+      box(150, 100, 60);
+      fill(220, 190, 50); translate(0, 55, 0); box(120, 10, 20); // Barstock
+    } else if (type.equals("Lathe Machine")) {
+      fill(50, 130, 90); translate(0, -40, 0);
+      box(80, 80, 70); // Headstock base
+      translate(0, -45, 0); fill(180); box(220, 15, 60); // Bed
+      fill(100); translate(-80, -35, 0); box(60, 60, 70); // Headstock
+      translate(45, 0, 0); fill(80); box(20, 30, 30); // Chuck
+      translate(110, 0, 0); fill(120); box(35, 45, 35); // Tailstock
+    } else if (type.equals("Inspection")) {
+      fill(200); translate(0, -40, 0);
+      box(140, 5, 90); // Table
+      fill(100); 
+      pushMatrix(); translate(-60, 20, -35); box(5, 40, 5); popMatrix();
+      pushMatrix(); translate(60, 20, -35); box(5, 40, 5); popMatrix();
+      pushMatrix(); translate(-60, 20, 35); box(5, 40, 5); popMatrix();
+      pushMatrix(); translate(60, 20, 35); box(5, 40, 5); popMatrix();
+    }
+    popMatrix();
+    
+    // Operating Pad
+    pushMatrix(); translate(opX, 2, opZ); rotateY(rot); rotateX(HALF_PI);
+    fill(255, 255, 0, 80); noStroke(); rectMode(CENTER); rect(0, 0, 60, 60); rectMode(CORNER);
+    popMatrix();
+  }
+}
+
+// =========================================================
+// 3D STICKMAN WORKER
+// =========================================================
+
+class Worker {
+  float x, z;
+  int state = 0; // 0: To Lathe, 1: Machining, 2: To Inspect, 3: Done
+  int currentOpIndex = 0;
+  float speed = 4.0;
+  int workTimer = 0;
+  String statusMsg = "Ready. Click 'START SIM'.";
+  float animPhase = 0;
+  
+  Worker(float startX, float startZ) { x = startX; z = startZ; }
+  
+  void update() {
+    if (isComplete) return;
+    
+    if (state == 0) { // Moving to Lathe
+      Machine target = machines.get(1); // Lathe
+      statusMsg = "Walking to Lathe Machine...";
+      if (moveTo(target.opX, target.opZ)) {
+        state = 1;
+        workTimer = 100;
+        camEye.set(target.x, -250, target.z + 300);
+        camTarget.set(target.x, -50, target.z);
+      }
+    } 
+    else if (state == 1) { // Working on Lathe
+      animPhase += 0.2; // Fast arm movement
+      Operation op = operations.get(currentOpIndex);
+      statusMsg = "MACHINING: " + op.name;
+      
+      workTimer--;
+      if (workTimer <= 0) {
+        totalTimeSpent += op.obsTime;
+        currentOpIndex++;
+        if (currentOpIndex >= operations.size()) {
+          state = 2; // Move to inspection
+          camEye.set(0, -600, 800);
+          camTarget.set(0, 0, 0);
+        } else {
+          workTimer = 100; // Time for next op animation
+        }
+      }
+    }
+    else if (state == 2) { // Moving to Inspection
+      Machine target = machines.get(2);
+      statusMsg = "Walking to Inspection Bay...";
+      if (moveTo(target.opX, target.opZ)) {
+        state = 3;
+        workTimer = 120;
+      }
+    }
+    else if (state == 3) {
+      statusMsg = "Inspecting final dimensions...";
+      animPhase += 0.1;
+      workTimer--;
+      if (workTimer <= 0) {
+        isComplete = true;
+        isSimulating = false;
+        
+        // Final Calculations
+        float basicTime = totalTimeSpent * (perfRating / 100.0);
+        float stdTime = basicTime * (1.0 + allowance);
+        statusMsg = "Done! Std Time: " + nf(stdTime, 0, 2) + " min.";
+      }
+    }
+  }
+  
+  boolean moveTo(float tx, float tz) {
+    float d = dist(x, z, tx, tz);
+    if (d > speed) {
+      animPhase += 0.3; // Walk cycle speed
+      float angle = atan2(tz - z, tx - x);
+      x += cos(angle) * speed;
+      z += sin(angle) * speed;
+      totalDistanceWalked += (speed * 0.02); // Distance scale
+      return false;
+    } else {
+      x = tx; z = tz;
+      return true;
+    }
+  }
+  
+  void draw() {
+    pushMatrix();
+    translate(x, -60, z);
+    
+    // Rotate body
+    if (state == 1) rotateY(PI); // Face lathe
+    else if (state == 3) rotateY(PI); // Face table
+    else rotateY(atan2(machines.get(state == 0 ? 1 : 2).opZ - z, machines.get(state == 0 ? 1 : 2).opX - x) - HALF_PI);
+    
+    // 3D Stickman Construct using Boxes (Stable in Android P3D)
+    float swing = (state == 1 || state == 3) ? 0 : sin(animPhase) * 0.8;
+    float armSwing = (state == 1 || state == 3) ? sin(animPhase)*0.3 : swing;
+    
+    // Head (Yellow)
+    fill(255, 200, 0); noStroke();
+    pushMatrix(); translate(0, -35, 0); sphere(12); popMatrix();
+    
+    // Spine (Red)
+    fill(200, 50, 50);
+    pushMatrix(); translate(0, -10, 0); box(12, 35, 8); popMatrix();
+    
+    // Left Arm
+    pushMatrix(); translate(-10, -20, 0); rotateX(armSwing); translate(0, 15, 0); box(6, 30, 6); popMatrix();
+    // Right Arm
+    pushMatrix(); translate(10, -20, 0); rotateX(-armSwing); translate(0, 15, 0); box(6, 30, 6); popMatrix();
+    
+    // Legs (Blue)
+    fill(50, 100, 200);
+    if (state == 1 || state == 3) {
+      // Standing
+      pushMatrix(); translate(-6, 25, 0); box(7, 35, 7); popMatrix();
+      pushMatrix(); translate(6, 25, 0); box(7, 35, 7); popMatrix();
+    } else {
+      // Walking
+      pushMatrix(); translate(-5, 10, 0); rotateX(-swing); translate(0, 17, 0); box(7, 35, 7); popMatrix();
+      pushMatrix(); translate(5, 10, 0); rotateX(swing); translate(0, 17, 0); box(7, 35, 7); popMatrix();
+    }
+    
+    popMatrix();
+  }
+}
+
+// Window title fallback for various Processing/APDE versions
+void setWindowFrameTitle(String title) {
+  try {
+    java.lang.reflect.Method m = getClass().getMethod("windowTitle", String.class);
+    m.invoke(this, title);
+  } catch (Exception e1) {
+    try {
+      if (surface != null) {
+        java.lang.reflect.Method m = surface.getClass().getMethod("setTitle", String.class);
+        m.invoke(surface, title);
+      }
+    } catch (Exception e2) {}
+  }
+}
