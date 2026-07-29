@@ -1,0 +1,481 @@
+// =====================================================================
+// TWO-HANDED PROCESS SIMULATOR & LIVE CHART CHECKER
+// Features: 3D Stickman Assembly Animation, Continuous Conveyor,
+//           Interactive Flow Charts with Glowing Active Step Highlighting,
+//           and Speed Controls (Fast Forward / Slow Down).
+// =====================================================================
+
+int currentMode = 1; // 1: Simulation, 2: Present Chart, 3: Improved Chart
+boolean isSimulating = false;
+float cycleTimer = 0;
+float timeMultiplier = 1.0; // 1.0 = Normal speed, >1 = Fast, <1 = Slow
+
+// Simulation Objects
+Worker worker;
+Conveyor conveyor;
+
+// Camera
+PVector camEye, camTarget, curEye, curTarget;
+
+void setup() {
+  size(1280, 720, P3D);
+  smooth(4);
+  setWindowFrameTitle("Two-Handed Process Simulation & Live Chart");
+  frameRate(60);
+  
+  camEye = new PVector(0, -350, 400);
+  camTarget = new PVector(0, -50, 0);
+  curEye = camEye.copy();
+  curTarget = camTarget.copy();
+  
+  worker = new Worker();
+  conveyor = new Conveyor();
+}
+
+void draw() {
+  background(28, 33, 43);
+  
+  if (currentMode == 1) {
+    // --- 3D SIMULATION RENDERING ---
+    curEye.lerp(camEye, 0.1);
+    curTarget.lerp(camTarget, 0.1);
+    camera(curEye.x, curEye.y, curEye.z, curTarget.x, curTarget.y, curTarget.z, 0, 1, 0);
+    
+    ambientLight(140, 140, 150);
+    directionalLight(255, 255, 255, 0.3, 1, -0.6);
+    pointLight(200, 220, 255, 0, -300, 100);
+    
+    drawEnvironment();
+    conveyor.draw();
+    
+    if (isSimulating) {
+      worker.updateSimulation();
+      conveyor.update();
+    } else {
+      worker.resetPose();
+    }
+    worker.draw();
+  }
+  
+  // --- 2D OVERLAYS & UI ---
+  hint(DISABLE_DEPTH_TEST);
+  camera();
+  noLights();
+  
+  if (currentMode == 1) {
+    drawSimulationHUD();
+    drawLiveFlowcharts(); // LIVE GLOWING FLOWCHART ADDED HERE
+  }
+  else if (currentMode == 2) drawPresentChart();
+  else if (currentMode == 3) drawImprovedChart();
+  
+  hint(ENABLE_DEPTH_TEST);
+}
+
+// =========================================================
+// INPUT HANDLING
+// =========================================================
+
+void mousePressed() {
+  // Top Navigation Tabs
+  if (checkBtn(20, 20, 150, 40)) currentMode = 1;
+  if (checkBtn(180, 20, 200, 40)) currentMode = 2;
+  if (checkBtn(390, 20, 200, 40)) currentMode = 3;
+  
+  // Simulation Controls
+  if (currentMode == 1) {
+    // Start/Stop Button
+    if (checkBtn(20, height - 70, 150, 45)) {
+      isSimulating = !isSimulating;
+      if(isSimulating && worker.isCycleComplete) {
+        cycleTimer = 0;
+        conveyor.bringInNewPart();
+      } else if (isSimulating && conveyor.partX >= 300) {
+        conveyor.bringInNewPart();
+      }
+    }
+    
+    // Speed Controls
+    if (checkBtn(180, height - 70, 50, 45)) { // Slow Down
+      timeMultiplier = max(0.25, timeMultiplier - 0.25);
+    }
+    if (checkBtn(300, height - 70, 50, 45)) { // Fast Forward
+      timeMultiplier = min(4.0, timeMultiplier + 0.25);
+    }
+  }
+}
+
+boolean checkBtn(float x, float y, float w, float h) {
+  return mouseX >= x && mouseX <= x + w && mouseY >= y && mouseY <= y + h;
+}
+
+void drawButton(float x, float y, float w, float h, String label, color bg) {
+  fill(bg); stroke(200); strokeWeight(1); rect(x, y, w, h, 6);
+  fill(255); textAlign(CENTER, CENTER); textSize(14);
+  text(label, x + w/2, y + h/2 - 2);
+}
+
+// =========================================================
+// UI SCREENS & CHARTS WITH LIVE GLOWING HIGHLIGHTS
+// =========================================================
+
+void drawSimulationHUD() {
+  fill(30, 40, 50, 230); noStroke(); rect(0, 0, width, 75);
+  
+  drawButton(20, 20, 150, 40, "1. Simulation", color(0, 120, 200));
+  drawButton(180, 20, 200, 40, "2. Present Chart", color(60));
+  drawButton(390, 20, 200, 40, "3. Improved Chart", color(60));
+  
+  fill(255); textAlign(RIGHT, CENTER); textSize(18);
+  text("Continuous Assembly Simulator", width - 30, 37);
+  
+  // Bottom Bar
+  fill(20, 25, 30, 200); rect(0, height - 90, width, 90);
+  
+  drawButton(20, height - 70, 150, 45, isSimulating ? "STOP" : "START ASSEMBLY", isSimulating ? color(200, 50, 50) : color(40, 160, 90));
+  
+  // Speed Control Buttons
+  drawButton(180, height - 70, 50, 45, "<<", color(80));
+  fill(255); textAlign(CENTER, CENTER); textSize(16);
+  text(nf(timeMultiplier, 1, 2) + "x", 265, height - 48);
+  drawButton(300, height - 70, 50, 45, ">>", color(80));
+  
+  fill(0, 255, 150); textAlign(LEFT, CENTER); textSize(18);
+  text("Current Method: IMPROVED (Simultaneous Processing)", 400, height - 60);
+  
+  fill(255, 200, 0);
+  if(isSimulating) {
+    text("Left Hand Step: " + worker.step, 400, height - 35);
+    text("Right Hand Step: " + worker.step, 750, height - 35);
+  }
+}
+
+// LIVE GLOWING FLOWCHART FOR SIMULATION MODE
+void drawLiveFlowcharts() {
+  String[] lhText = { "Pickup washer & nut", "Hold washer & nut", "Place washer & nut", "Assist tightening" };
+  String[] rhText = { "Pickup bolt", "Insert bolt in hole", "Hold bolt", "Thread & tighten nut" };
+  
+  // 0 = Operation (Circle), 1 = Delay/Hold (Triangle)
+  int[] lhSymbols = { 0, 1, 0, 0 }; 
+  int[] rhSymbols = { 0, 0, 1, 0 };
+  
+  int activeStep = isSimulating ? worker.step : 0;
+  
+  float leftX = 40;
+  float rightX = width - 340;
+  float startY = 120;
+  float boxW = 300;
+  float boxH = 60;
+  float gap = 90;
+  
+  // Titles
+  fill(255); textAlign(CENTER, CENTER); textSize(18);
+  text("LEFT HAND FLOW", leftX + boxW/2, startY - 20);
+  text("RIGHT HAND FLOW", rightX + boxW/2, startY - 20);
+  
+  for (int i = 0; i < 4; i++) {
+    float y = startY + (i * gap) + 20;
+    
+    // Connecting lines between boxes
+    if (i < 3) {
+      stroke(150); strokeWeight(2);
+      line(leftX + boxW/2, y + boxH, leftX + boxW/2, y + gap);
+      line(rightX + boxW/2, y + boxH, rightX + boxW/2, y + gap);
+    }
+    
+    boolean isActive = (activeStep == i + 1);
+    
+    // Draw Left and Right Boxes
+    drawChartBox(leftX, y, boxW, boxH, lhText[i], lhSymbols[i], isActive);
+    drawChartBox(rightX, y, boxW, boxH, rhText[i], rhSymbols[i], isActive);
+  }
+}
+
+void drawChartBox(float x, float y, float w, float h, String label, int symbolType, boolean isActive) {
+  // Glowing Box Effect
+  if (isActive) {
+    noStroke();
+    for (int g = 4; g > 0; g--) {
+      fill(0, 255, 150, 40); // Neon Green Glow
+      rect(x - g*3, y - g*3, w + g*6, h + g*6, 8);
+    }
+    fill(20, 50, 30, 240); // Active Background
+    stroke(0, 255, 150);
+    strokeWeight(2);
+  } else {
+    fill(30, 40, 50, 220); // Normal Background
+    stroke(100);
+    strokeWeight(1);
+  }
+  rect(x, y, w, h, 8);
+  
+  // Draw Chart Symbol (Circle for Op, Triangle for Hold)
+  float symX = x + 30;
+  float symY = y + h/2;
+  
+  if(isActive) { stroke(0, 255, 150); fill(0, 255, 150, 80); }
+  else { stroke(200); fill(200, 50); }
+  strokeWeight(2);
+  
+  if (symbolType == 0) { // Circle (Operation)
+    ellipse(symX, symY, 24, 24);
+  } else if (symbolType == 1) { // Inverted Triangle (Delay)
+    triangle(symX - 12, symY - 10, symX + 12, symY - 10, symX, symY + 12);
+  }
+  
+  // Text
+  if(isActive) fill(0, 255, 150); else fill(220);
+  textAlign(LEFT, CENTER); textSize(15);
+  text(label, x + 60, y + h/2 - 2);
+}
+
+void drawPresentChart() {
+  background(245, 250, 255);
+  fill(30, 40, 50, 230); noStroke(); rect(0, 0, width, 75);
+  drawButton(20, 20, 150, 40, "1. Simulation", color(60));
+  drawButton(180, 20, 200, 40, "2. Present Chart", color(0, 120, 200));
+  drawButton(390, 20, 200, 40, "3. Improved Chart", color(60));
+  
+  fill(30); textAlign(CENTER, TOP); textSize(24);
+  text("TWO HANDED PROCESS CHART - PRESENT METHOD", width/2, 100);
+  
+  float col1 = width/2 - 300; float col2 = width/2 + 300; float sY = 160; float sOff = 40;
+  textAlign(CENTER, TOP); textSize(18); fill(0);
+  text("LEFT HAND", col1, sY); text("RIGHT HAND", col2, sY);
+  
+  textSize(14);
+  String[] lh = {"2 Sec - Pickup washer (Op 1)", "2 Sec - Hold washer (Delay 1)", "2 Sec - Place washer on bolt (Op 2)", "2 Sec - Pickup nut (Op 3)", "2 Sec - hold washer (Delay 2)", "2 Sec - Hold washer (Delay 3)", "2 Sec - Idle (Storage 1)"};
+  String[] rh = {"2 Sec - Pickup bolt (Op 1)", "2 Sec - Insert bolt in hole (Op 2)", "2 Sec - Hold bolt (Delay 1)", "2 Sec - Hold bolt (Delay 2)", "2 Sec - Thread nut onto bolt (Op 3)", "2 Sec - Tighten nut by hand (Op 4)", "2 Sec - Final adjustment (Op 5)"};
+  
+  for(int i=0; i<7; i++) {
+    text(lh[i], col1, sY + 40 + (i*sOff));
+    text(rh[i], col2, sY + 40 + (i*sOff));
+    stroke(200); line(col1-150, sY + 65 + (i*sOff), col2+150, sY + 65 + (i*sOff));
+  }
+}
+
+void drawImprovedChart() {
+  background(245, 250, 255);
+  fill(30, 40, 50, 230); noStroke(); rect(0, 0, width, 75);
+  drawButton(20, 20, 150, 40, "1. Simulation", color(60));
+  drawButton(180, 20, 200, 40, "2. Present Chart", color(60));
+  drawButton(390, 20, 200, 40, "3. Improved Chart", color(0, 120, 200));
+  
+  fill(30); textAlign(CENTER, TOP); textSize(24);
+  text("TWO HANDED PROCESS CHART - IMPROVED METHOD", width/2, 100);
+  
+  float col1 = width/2 - 300; float col2 = width/2 + 300; float sY = 160; float sOff = 50;
+  textAlign(CENTER, TOP); textSize(18); fill(0);
+  text("LEFT HAND", col1, sY); text("RIGHT HAND", col2, sY);
+  
+  String[] lh = {
+    "2 Sec - Pickup washer & nut (Op 1)", 
+    "2 Sec - Hold washer & nut (Delay 1)", 
+    "2 Sec - Place washer & nut on bolt (Op 2)", 
+    "2 Sec - Assist tightening nut (Op 3)"
+  };
+  String[] rh = {
+    "2 Sec - Pickup bolt (Op 1)", 
+    "2 Sec - Insert bolt in hole (Op 2)", 
+    "2 Sec - Hold bolt (Delay 1)", 
+    "2 Sec - Thread & tighten nut (Op 3)"
+  };
+  
+  int activeStep = worker.step;
+  if (!isSimulating) {
+    activeStep = (int)((millis() / 1000) % 4) + 1; 
+  }
+  
+  for(int i=0; i<4; i++) {
+    if (activeStep == i + 1) {
+      fill(255, 220, 50, 180);
+      stroke(255, 150, 0);
+      strokeWeight(3);
+      rect(col1 - 180, sY + 32 + (i*sOff), 360, 38, 8);
+      rect(col2 - 180, sY + 32 + (i*sOff), 360, 38, 8);
+      fill(0, 0, 150);
+    } else {
+      fill(255, 255, 255, 200);
+      stroke(200);
+      strokeWeight(1);
+      rect(col1 - 180, sY + 32 + (i*sOff), 360, 38, 8);
+      rect(col2 - 180, sY + 32 + (i*sOff), 360, 38, 8);
+      fill(50);
+    }
+    
+    textSize(14);
+    textAlign(CENTER, CENTER);
+    text(lh[i], col1, sY + 51 + (i*sOff));
+    text(rh[i], col2, sY + 51 + (i*sOff));
+  }
+  
+  // Summary & Stats Box
+  float tX = width/2 - 350; float tY = 410;
+  fill(255); stroke(0); strokeWeight(2); rect(tX, tY, 700, 130);
+  fill(0); textSize(16); textAlign(CENTER, TOP); text("Improved Method Summary & Savings", tX + 350, tY + 10);
+  
+  textSize(13); textAlign(LEFT, TOP);
+  text("• Total Assembly Time: 8 Seconds (vs 14 Seconds in Present Method)", tX + 30, tY + 45);
+  text("• Operations Balanced Simultaneously across Both Hands", tX + 30, tY + 70);
+  fill(0, 120, 50); textSize(15);
+  text("• Percentage Time Saved = ((14 - 8) / 14) x 100 = 42.6%", tX + 30, tY + 95);
+}
+
+// =========================================================
+// 3D ENVIRONMENT & ENTITIES
+// =========================================================
+
+void drawEnvironment() {
+  pushMatrix(); rotateX(HALF_PI);
+  fill(50, 60, 70); noStroke(); rect(-1000, -1000, 2000, 2000); 
+  popMatrix();
+  
+  // Table
+  pushMatrix(); translate(0, 0, 0);
+  fill(120, 130, 140); box(400, 10, 150); 
+  translate(0, 50, 0);
+  pushMatrix(); translate(-180, 0, -60); box(10, 100, 10); popMatrix();
+  pushMatrix(); translate(180, 0, -60); box(10, 100, 10); popMatrix();
+  pushMatrix(); translate(-180, 0, 60); box(10, 100, 10); popMatrix();
+  pushMatrix(); translate(180, 0, 60); box(10, 100, 10); popMatrix();
+  popMatrix();
+  
+  // Parts Bins
+  pushMatrix(); translate(-100, -15, -40); fill(80, 150, 80); box(60, 20, 50); popMatrix(); 
+  pushMatrix(); translate(100, -15, -40); fill(150, 80, 80); box(60, 20, 50); popMatrix(); 
+}
+
+class Conveyor {
+  float beltOffset = 0;
+  float partX = 300; 
+  boolean partPresent = false;
+  
+  void update() {
+    beltOffset += (1.5 * timeMultiplier);
+    if (beltOffset > 20) beltOffset = 0;
+    
+    if (partPresent && partX < 0) {
+      partX += (3.0 * timeMultiplier);
+      if(partX >= 0) partX = 0; 
+    }
+    
+    if (worker.isCycleComplete && partX >= 0) {
+      partX += (3.0 * timeMultiplier);
+      if (partX > 300) {
+        bringInNewPart();
+      }
+    }
+  }
+  
+  void bringInNewPart() {
+    partX = -300;
+    partPresent = true;
+    worker.isCycleComplete = false;
+    cycleTimer = 0;
+  }
+  
+  void draw() {
+    pushMatrix(); translate(0, -10, 40);
+    fill(40); box(400, 5, 40); 
+    
+    fill(20);
+    for(float i = -190; i < 190; i += 20) {
+      pushMatrix(); translate(i + beltOffset, -3, 0); box(15, 2, 38); popMatrix();
+    }
+    
+    if (partPresent) {
+      pushMatrix(); translate(partX, -10, 0);
+      fill(200, 150, 0); box(30, 10, 30); 
+      if (worker.step >= 2) { fill(150); translate(0, -10, 0); box(8, 20, 8); } 
+      if (worker.step >= 3) { fill(220); translate(0, -5, 0); box(12, 3, 12); } 
+      if (worker.step >= 4) { fill(100); translate(0, -3, 0); box(10, 5, 10); } 
+      popMatrix();
+    }
+    popMatrix();
+  }
+}
+
+class Worker {
+  int step = 1; 
+  boolean isCycleComplete = false;
+  
+  PVector lhPos = new PVector(-20, -50, 0);
+  PVector rhPos = new PVector(20, -50, 0);
+  
+  void updateSimulation() {
+    if (conveyor.partX == 0 && !isCycleComplete) {
+      cycleTimer += (1.0 * timeMultiplier);
+      float lerpSpeed = min(1.0, 0.1 * timeMultiplier);
+      
+      if (cycleTimer < 120) {
+        step = 1;
+        lhPos.lerp(new PVector(-100, -20, -40), lerpSpeed); 
+        rhPos.lerp(new PVector(100, -20, -40), lerpSpeed);  
+      } 
+      else if (cycleTimer < 240) {
+        step = 2;
+        lhPos.lerp(new PVector(-50, -40, 20), lerpSpeed);   
+        rhPos.lerp(new PVector(0, -20, 40), lerpSpeed);     
+      }
+      else if (cycleTimer < 360) {
+        step = 3;
+        lhPos.lerp(new PVector(0, -25, 40), lerpSpeed);     
+        rhPos.lerp(new PVector(20, -30, 30), lerpSpeed);    
+      }
+      else if (cycleTimer < 480) {
+        step = 4;
+        lhPos.lerp(new PVector(-5 + sin(cycleTimer*0.2)*5, -25, 40), lerpSpeed * 2); 
+        rhPos.lerp(new PVector(5 + cos(cycleTimer*0.2)*5, -25, 40), lerpSpeed * 2);
+      }
+      else {
+        isCycleComplete = true; 
+      }
+    } else {
+      resetPose();
+    }
+  }
+  
+  void resetPose() {
+    float lerpSpeed = min(1.0, 0.1 * timeMultiplier);
+    lhPos.lerp(new PVector(-30, -30, -10), lerpSpeed);
+    rhPos.lerp(new PVector(30, -30, -10), lerpSpeed);
+  }
+  
+  void draw() {
+    pushMatrix(); translate(0, -120, -50);
+    
+    // Head & Body
+    fill(255, 200, 0); noStroke();
+    pushMatrix(); translate(0, -40, 0); sphere(20); popMatrix();
+    fill(50, 100, 200);
+    pushMatrix(); translate(0, 10, 0); box(35, 60, 20); popMatrix();
+    
+    // Pseudo-IK Arms
+    stroke(255, 200, 0); strokeWeight(10);
+    line(-25, -10, 0, lhPos.x, lhPos.y + 120, lhPos.z + 50); // Left Arm
+    line(25, -10, 0, rhPos.x, rhPos.y + 120, rhPos.z + 50);  // Right Arm
+    
+    noStroke();
+    // Hands
+    fill(255, 200, 0);
+    pushMatrix(); translate(lhPos.x, lhPos.y + 120, lhPos.z + 50); sphere(6); popMatrix();
+    pushMatrix(); translate(rhPos.x, rhPos.y + 120, rhPos.z + 50); sphere(6); popMatrix();
+    
+    popMatrix();
+  }
+}
+
+// Window title fallback
+void setWindowFrameTitle(String title) {
+  try {
+    java.lang.reflect.Method m = getClass().getMethod("windowTitle", String.class);
+    m.invoke(this, title);
+  } catch (Exception e1) {
+    try {
+      if (surface != null) {
+        java.lang.reflect.Method m = surface.getClass().getMethod("setTitle", String.class);
+        m.invoke(surface, title);
+      }
+    } catch (Exception e2) {}
+  }
+}
