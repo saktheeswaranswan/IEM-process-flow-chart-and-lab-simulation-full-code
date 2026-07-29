@@ -1,0 +1,533 @@
+// =====================================================================
+// MAN-MACHINE MULTIPLE ACTIVITY CHART 3D SIMULATOR
+// Based on Lathe Operation Sequence (12 Min Cycle Time)
+// =====================================================================
+
+int currentMode = 1; // 1: 3D Simulation, 2: Multiple Activity Chart, 3: Summary Matrix
+
+float simTime = 0.0; // Timer from 0 to 12 (minutes)
+boolean isSimulating = false;
+boolean isComplete = false;
+
+ArrayList<Machine> machines = new ArrayList<Machine>();
+ArrayList<Room> rooms = new ArrayList<Room>();
+Worker worker;
+
+// Camera System
+PVector camEye, camTarget;
+PVector currentCamEye, currentCamTarget;
+float worldSize = 1400;
+
+// Data representation of the Man-Machine Chart (from 64135.jpg)
+// Format: {StartTime, EndTime, Man Activity, Machine Activity, Man Status, Machine Status}
+String[][] processSteps = {
+  {"0.0", "1.0", "Carry bar stock from store", "Idle", "Working", "Idle"},
+  {"1.0", "3.0", "Fix job in lathe chuck", "Idle", "Working", "Idle"},
+  {"3.0", "4.5", "Manual turning of job", "Manual turning of job", "Working", "Working"},
+  {"4.5", "5.5", "Chamfering operation", "Chamfering operation", "Working", "Working"},
+  {"5.5", "7.5", "Idle", "Threading operation", "Idle", "Working"},
+  {"7.5", "8.0", "Bring saddle back and rearrange", "Idle", "Working", "Idle"},
+  {"8.0", "9.5", "Idle", "Threading operation", "Idle", "Working"},
+  {"9.5", "10.5", "Inspection of job", "Idle", "Working", "Idle"},
+  {"10.5", "11.0", "Remove job from lathe chuck", "Idle", "Working", "Idle"},
+  {"11.0", "12.0", "Carry completed workpiece to store", "Idle", "Working", "Idle"}
+};
+
+void setup() {
+  size(1280, 720, P3D);
+  setWindowFrameTitle("Man-Machine Multiple Activity Chart - Lathe");
+  
+  camEye = new PVector(0, -900, 1000);
+  camTarget = new PVector(0, 0, 0);
+  currentCamEye = camEye.copy();
+  currentCamTarget = camTarget.copy();
+  
+  buildSimulationLayout();
+}
+
+void draw() {
+  background(20, 25, 30);
+  
+  if (currentMode == 1) {
+    // --- 3D ENVIRONMENT RENDERING ---
+    currentCamEye.lerp(camEye, 0.08);
+    currentCamTarget.lerp(camTarget, 0.08);
+    
+    camera(currentCamEye.x, currentCamEye.y, currentCamEye.z,
+           currentCamTarget.x, currentCamTarget.y, currentCamTarget.z,
+           0, 1, 0);
+           
+    ambientLight(150, 150, 160);
+    directionalLight(255, 255, 255, 0.5, 1, -0.5);
+    pointLight(200, 220, 255, 0, -800, 0);
+    
+    drawFloor();
+    for (Room r : rooms) r.draw();
+    for (Machine m : machines) m.draw();
+    
+    // Path indicator
+    stroke(0, 255, 200, 80);
+    strokeWeight(4);
+    line(machines.get(0).opX, 5, machines.get(0).opZ, machines.get(1).opX, 5, machines.get(1).opZ);
+    
+    if (isSimulating && !isComplete) {
+      simTime += 0.015; // Simulation speed multiplier
+      if (simTime >= 12.0) {
+        simTime = 12.0;
+        isComplete = true;
+        isSimulating = false;
+        triggerOutsideView();
+      }
+      worker.update(simTime);
+    }
+    worker.draw();
+  }
+  
+  // --- 2D OVERLAYS / HUD / TABLES ---
+  hint(DISABLE_DEPTH_TEST);
+  camera(); 
+  noLights();
+  
+  if (currentMode == 1) {
+    drawHUD();
+  } else if (currentMode == 2) {
+    drawMultipleActivityChart();
+  } else if (currentMode == 3) {
+    drawSummaryReportChart();
+  }
+  
+  hint(ENABLE_DEPTH_TEST);
+}
+
+// =========================================================
+// HELPER FOR CROSS-VERSION WINDOW TITLE SUPPORT
+// =========================================================
+void setWindowFrameTitle(String title) {
+  try {
+    java.lang.reflect.Method m = getClass().getMethod("windowTitle", String.class);
+    m.invoke(this, title);
+  } catch (Exception e1) {
+    try {
+      if (surface != null) {
+        java.lang.reflect.Method m = surface.getClass().getMethod("setTitle", String.class);
+        m.invoke(surface, title);
+      }
+    } catch (Exception e2) {}
+  }
+}
+
+// =========================================================
+// INTERACTION LOGIC
+// =========================================================
+void mousePressed() {
+  if (currentMode == 1) {
+    if (checkButton(width - 260, 20, 240, 50)) { currentMode = 2; return; }
+    if (checkButton(20, 140, 160, 45)) { isSimulating = !isSimulating; return; }
+    if (checkButton(200, 140, 160, 45)) {
+      simTime = 0;
+      isSimulating = false;
+      isComplete = false;
+      worker.update(0);
+      triggerOutsideView();
+      return;
+    }
+  } else if (currentMode == 2) {
+    if (checkButton(width - 260, 20, 240, 50)) { currentMode = 3; }
+    if (checkButton(20, 20, 150, 50)) { currentMode = 1; }
+  } else if (currentMode == 3) {
+    if (checkButton(width - 260, 20, 240, 50)) { currentMode = 1; }
+    if (checkButton(20, 20, 150, 50)) { currentMode = 2; }
+  }
+}
+
+boolean checkButton(float x, float y, float w, float h) {
+  return mouseX >= x && mouseX <= x + w && mouseY >= y && mouseY <= y + h;
+}
+
+// =========================================================
+// LAYOUT SETUP
+// =========================================================
+void buildSimulationLayout() {
+  machines.clear();
+  rooms.clear();
+  
+  rooms.add(new Room(0, 0, worldSize*0.8, worldSize*0.5, "Lathe Workshop Floor", color(45, 55, 65)));
+  
+  // Place Store and Lathe
+  machines.add(new Machine(-350, 0, PI/2, "Storage", 0));
+  machines.add(new Machine(350, 0, -PI/2, "Lathe", 1));
+  
+  worker = new Worker();
+  worker.update(0);
+}
+
+void triggerInsideView(float mx, float mz, float mRot) {
+  camEye.set(mx + sin(mRot) * 350, -250, mz + cos(mRot) * 350);
+  camTarget.set(mx, -80, mz);
+}
+
+void triggerOutsideView() {
+  camEye.set(0, -900, 1000);
+  camTarget.set(0, 0, 0);
+}
+
+void drawFloor() {
+  pushMatrix();
+  rotateX(HALF_PI);
+  fill(30);
+  noStroke();
+  rectMode(CENTER);
+  rect(0, 0, worldSize*3, worldSize*3);
+  
+  stroke(50);
+  strokeWeight(2);
+  for(float i = -worldSize * 1.5; i <= worldSize * 1.5; i += 100) {
+    line(i, -worldSize*1.5, i, worldSize*1.5);
+    line(-worldSize*1.5, i, worldSize*1.5, i);
+  }
+  popMatrix();
+}
+
+// =========================================================
+// 2D HUD & CHARTS (MAN-MACHINE ACTIVITY)
+// =========================================================
+void drawHUD() {
+  fill(15, 20, 30, 230);
+  noStroke();
+  rectMode(CORNER);
+  rect(0, 0, width, 200);
+  
+  fill(255);
+  textAlign(LEFT, TOP);
+  textSize(26);
+  text("MAN-MACHINE MULTIPLE ACTIVITY SIMULATION", 20, 15);
+  
+  int currentStepIndex = worker.getCurrentStepIndex();
+  String[] step = processSteps[currentStepIndex];
+  
+  fill(0, 255, 200);
+  textSize(24);
+  text("Cycle Time: " + nf(simTime, 0, 2) + " / 12.00 min", 20, 55);
+  
+  // Real-time Status Indicators
+  textSize(20);
+  
+  // Man Status
+  if (step[4].equals("Idle")) fill(255, 80, 80); else fill(100, 255, 100);
+  text("MAN: " + step[4] + " - " + step[2], 20, 95);
+  
+  // Machine Status
+  if (step[5].equals("Idle")) fill(255, 80, 80); else fill(100, 255, 100);
+  text("LATHE: " + step[5] + " - " + step[3], 450, 95);
+
+  drawButton(20, 140, 160, 45, isSimulating ? "PAUSE" : "START SIM", color(40, 160, 90));
+  drawButton(200, 140, 160, 45, "RESET", color(180, 80, 40));
+  drawButton(width - 260, 20, 240, 50, "Activity Chart >", color(60, 120, 200));
+}
+
+void drawMultipleActivityChart() {
+  background(240, 245, 250); 
+  
+  fill(30);
+  textAlign(CENTER, TOP);
+  textSize(28);
+  text("MAN - MACHINE (MULTIPLE ACTIVITY) CHART", width/2, 20);
+  
+  drawButton(20, 20, 150, 50, "< 3D Sim", color(100));
+  drawButton(width - 260, 20, 240, 50, "Summary Report >", color(60, 120, 200));
+  
+  float tableW = width * 0.92;
+  float tableH = height * 0.75;
+  float tX = width * 0.04;
+  float tY = 90;
+  
+  stroke(0);
+  strokeWeight(2);
+  noFill();
+  rectMode(CORNER);
+  rect(tX, tY, tableW, tableH);
+  
+  // Header
+  fill(200, 220, 240);
+  rect(tX, tY, tableW, 50);
+  line(tX, tY + 50, tX + tableW, tY + 50);
+  
+  fill(0);
+  textSize(20);
+  textAlign(CENTER, CENTER);
+  text("Time (min)", tX + 100, tY + 25);
+  text("Man Activity", tX + tableW*0.4, tY + 25);
+  text("Machine Activity", tX + tableW*0.8, tY + 25);
+  
+  line(tX + 200, tY, tX + 200, tY + tableH);
+  line(tX + tableW*0.65, tY, tX + tableW*0.65, tY + tableH);
+  
+  float rowH = (tableH - 50) / processSteps.length;
+  
+  for (int i = 0; i < processSteps.length; i++) {
+    float y = tY + 50 + (i * rowH);
+    line(tX, y, tX + tableW, y);
+    
+    fill(0);
+    textAlign(CENTER, CENTER);
+    text(processSteps[i][0] + " - " + processSteps[i][1], tX + 100, y + rowH/2);
+    
+    textAlign(LEFT, CENTER);
+    
+    // Man Column coloring based on Idle status
+    if (processSteps[i][4].equals("Idle")) fill(200, 50, 50); else fill(0);
+    text(processSteps[i][2], tX + 220, y + rowH/2);
+    
+    // Machine Column coloring
+    if (processSteps[i][5].equals("Idle")) fill(200, 50, 50); else fill(0, 100, 200);
+    text(processSteps[i][3], tX + tableW*0.65 + 20, y + rowH/2);
+  }
+}
+
+void drawSummaryReportChart() {
+  background(245, 245, 240);
+  
+  fill(30);
+  textAlign(CENTER, TOP);
+  textSize(28);
+  text("SUMMARY MATRIX", width/2, 20);
+  
+  drawButton(20, 20, 150, 50, "< Chart", color(100));
+  drawButton(width - 260, 20, 240, 50, "3D Sim >", color(60, 120, 200));
+  
+  float tabX = width * 0.15;
+  float tabY = 150;
+  float tabW = width * 0.7;
+  float tabH = 300;
+  
+  fill(255);
+  stroke(0);
+  strokeWeight(2);
+  rect(tabX, tabY, tabW, tabH);
+  
+  fill(220, 230, 210);
+  rect(tabX, tabY, tabW, 60);
+  
+  fill(0);
+  textAlign(CENTER, CENTER);
+  textSize(22);
+  text("Entity", tabX + 100, tabY + 30);
+  text("Cycle Time (min)", tabX + 300, tabY + 30);
+  text("Working Time (min)", tabX + 530, tabY + 30);
+  text("Percentage Utilisation (%)", tabX + 780, tabY + 30);
+  
+  line(tabX, tabY + 60, tabX + tabW, tabY + 60);
+  line(tabX, tabY + 180, tabX + tabW, tabY + 180);
+  
+  line(tabX + 200, tabY, tabX + 200, tabY + tabH);
+  line(tabX + 420, tabY, tabX + 420, tabY + tabH);
+  line(tabX + 650, tabY, tabX + 650, tabY + tabH);
+  
+  // Data Matches 64135.jpg & 64138.jpg precisely
+  String[][] summaryData = {
+    {"Man", "12", "8.5", "8.5 / 12 x 100 = 70.83 %"},
+    {"Machine", "12", "5.5", "5.5 / 12 x 100 = 45.83 %"}
+  };
+  
+  float sRowH = 120;
+  for (int i = 0; i < 2; i++) {
+    float y = tabY + 60 + (i * sRowH);
+    fill(0);
+    textAlign(CENTER, CENTER);
+    text(summaryData[i][0], tabX + 100, y + sRowH/2);
+    text(summaryData[i][1], tabX + 300, y + sRowH/2);
+    text(summaryData[i][2], tabX + 530, y + sRowH/2);
+    text(summaryData[i][3], tabX + 780, y + sRowH/2);
+  }
+}
+
+void drawButton(float x, float y, float w, float h, String label, color bg) {
+  fill(bg);
+  stroke(255);
+  strokeWeight(2);
+  rectMode(CORNER);
+  rect(x, y, w, h, 8);
+  fill(255);
+  textAlign(CENTER, CENTER);
+  textSize(18);
+  text(label, x + w/2, y + h/2);
+}
+
+// =========================================================
+// 3D ENTITY CLASSES
+// =========================================================
+class Room {
+  float x, z, w, d;
+  String name;
+  color col;
+  Room(float _x, float _z, float _w, float _d, String _name, color _c) {
+    x=_x; z=_z; w=_w; d=_d; name=_name; col=_c;
+  }
+  void draw() {
+    pushMatrix();
+    translate(x, 0, z);
+    pushMatrix(); rotateX(HALF_PI); fill(col); noStroke(); rectMode(CENTER); rect(0, 0, w, d); popMatrix();
+    stroke(150, 180, 220, 80); strokeWeight(4); noFill(); translate(0, -50, 0); box(w, 100, d);
+    popMatrix();
+  }
+}
+
+class Machine {
+  float x, z, rot, opX, opZ;
+  String type;
+  
+  Machine(float _x, float _z, float _rot, String _type, int _id) {
+    type = _type; rot = _rot; x = _x; z = _z;
+    opX = x + sin(rot) * 120;
+    opZ = z + cos(rot) * 120;
+  }
+  
+  void draw() {
+    pushMatrix();
+    translate(x, -5, z);
+    rotateY(rot);
+    
+    stroke(30);
+    strokeWeight(1);
+    
+    if (type.equals("Storage")) {
+      fill(80, 90, 100);
+      translate(0, -75, 0);
+      pushMatrix(); translate(-75, 0, -35); box(10, 150, 10); popMatrix();
+      pushMatrix(); translate(75, 0, -35); box(10, 150, 10); popMatrix();
+      pushMatrix(); translate(-75, 0, 35); box(10, 150, 10); popMatrix();
+      pushMatrix(); translate(75, 0, 35); box(10, 150, 10); popMatrix();
+      fill(120, 130, 140);
+      pushMatrix(); translate(0, 60, 0); box(160, 5, 80); popMatrix();
+      pushMatrix(); translate(0, 0, 0); box(160, 5, 80); popMatrix();
+      pushMatrix(); translate(0, -60, 0); box(160, 5, 80); popMatrix();
+      fill(220, 190, 50);
+      pushMatrix(); translate(0, -5, 0); box(140, 15, 20); popMatrix(); // Stock
+    } 
+    else if (type.equals("Lathe")) {
+      fill(50, 130, 90); translate(0, -40, 0); box(100, 80, 80); // Base
+      translate(0, -45, 0); fill(180); box(220, 15, 60); // Bed
+      fill(100); translate(-80, -35, 0); box(60, 60, 70); // Headstock
+      
+      // Chuck (Rotating if Machine is working)
+      translate(45, 0, 0); rotateY(PI/2);
+      if (isSimulating && getMachineStatus().equals("Working")) { rotateZ(simTime * 50); }
+      fill(80); drawCylinder(16, 25, 30);
+      
+      // Tailstock
+      translate(0, 0, -110); fill(120); box(35, 45, 35);
+      
+      // Carriage (Moves during operations)
+      translate(0, 0, 55); 
+      if (isSimulating && getMachineStatus().equals("Working")) { translate(0, 0, sin(simTime * 8) * 15); }
+      translate(-25, 0, 0); fill(50); box(30, 25, 30);
+    } 
+    popMatrix();
+    
+    // Floor marker
+    pushMatrix();
+    translate(opX, 2, opZ);
+    rotateY(rot);
+    fill(0, 255, 200, 100);
+    noStroke(); rectMode(CENTER); rotateX(HALF_PI); rect(0, 0, 50, 50);
+    popMatrix();
+  }
+}
+
+void drawCylinder(int sides, float r, float h) {
+  float angle = TWO_PI / sides;
+  beginShape(TRIANGLE_FAN);
+  vertex(0, 0, h/2);
+  for (int i = 0; i <= sides; i++) vertex(cos(i * angle) * r, sin(i * angle) * r, h/2);
+  endShape();
+  beginShape(TRIANGLE_FAN);
+  vertex(0, 0, -h/2);
+  for (int i = 0; i <= sides; i++) vertex(cos(i * angle) * r, sin(i * angle) * r, -h/2);
+  endShape();
+  beginShape(QUAD_STRIP);
+  for (int i = 0; i <= sides; i++) {
+    float x = cos(i * angle) * r, y = sin(i * angle) * r;
+    vertex(x, y, h/2);
+    vertex(x, y, -h/2);
+  }
+  endShape();
+}
+
+// =========================================================
+// WORKER AGENT LINKED TO TIME CHART
+// =========================================================
+class Worker {
+  float x, z;
+  float animPhase = 0;
+  float rotAngle = 0;
+  
+  int getCurrentStepIndex() {
+    for (int i = 0; i < processSteps.length; i++) {
+      float end = Float.parseFloat(processSteps[i][1]);
+      if (simTime < end || i == processSteps.length - 1) return i;
+    }
+    return processSteps.length - 1;
+  }
+  
+  void update(float t) {
+    int idx = getCurrentStepIndex();
+    float stepStart = Float.parseFloat(processSteps[idx][0]);
+    float stepEnd = Float.parseFloat(processSteps[idx][1]);
+    
+    float progress = (t - stepStart) / (stepEnd - stepStart);
+    progress = constrain(progress, 0, 1);
+    
+    PVector storePos = new PVector(machines.get(0).opX, machines.get(0).opZ);
+    PVector lathePos = new PVector(machines.get(1).opX, machines.get(1).opZ);
+    
+    if (idx == 0) { // Carry from store
+      x = lerp(storePos.x, lathePos.x, progress);
+      z = lerp(storePos.z, lathePos.z, progress);
+      rotAngle = atan2(lathePos.x - storePos.x, lathePos.z - storePos.z);
+      animPhase += 0.3;
+      triggerOutsideView();
+    } 
+    else if (idx == 9) { // Carry to store
+      x = lerp(lathePos.x, storePos.x, progress);
+      z = lerp(lathePos.z, storePos.z, progress);
+      rotAngle = atan2(storePos.x - lathePos.x, storePos.z - lathePos.z);
+      animPhase += 0.3;
+      triggerOutsideView();
+    } 
+    else { // At Lathe
+      x = lathePos.x;
+      z = lathePos.z;
+      rotAngle = machines.get(1).rot + PI;
+      if (processSteps[idx][4].equals("Working")) animPhase += 0.25; 
+      else animPhase = 0; // Idle
+      
+      if (t > 1.5 && t < 10.5) triggerInsideView(machines.get(1).x, machines.get(1).z, machines.get(1).rot);
+    }
+  }
+  
+  void draw() {
+    pushMatrix();
+    translate(x, -45, z);
+    rotateY(rotAngle);
+    stroke(20); strokeWeight(1);
+    
+    // Body
+    fill(200, 60, 60); box(25, 45, 18);
+    // Hard Hat
+    translate(0, -32, 0); fill(255, 200, 0); sphereDetail(12); sphere(14);
+    
+    // Arms (Animate if working)
+    fill(200, 60, 60);
+    float armAngle = sin(animPhase) * 0.6;
+    
+    pushMatrix(); translate(-18, 20, 0); rotateX(armAngle); box(10, 35, 10); popMatrix();
+    pushMatrix(); translate(18, 20, 0); rotateX(-armAngle); box(10, 35, 10); popMatrix();
+    
+    popMatrix();
+  }
+}
+
+String getMachineStatus() {
+  int idx = worker.getCurrentStepIndex();
+  return processSteps[idx][5];
+}
