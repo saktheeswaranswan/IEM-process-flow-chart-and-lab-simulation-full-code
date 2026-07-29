@@ -1,0 +1,864 @@
+// =====================================================================
+// OPTIMIZED PRODUCT LAYOUT & FLOW PROCESS SIMULATOR (ENHANCED)
+// Features: Interactive 3D Drag/Drop Layout, Obstacle Avoidance,
+//           Flow Process Sequence Table, and Summary Matrix.
+// =====================================================================
+
+int currentMode = 1; // 1: 3D Product Layout, 2: Sequence Steps Table, 3: Summary Report
+
+float totalDistanceWalked = 0;
+int totalTimeSpent = 0;
+boolean isSimulating = false;
+boolean isComplete = false;
+
+ArrayList<Machine> machines = new ArrayList<Machine>();
+ArrayList<Room> rooms = new ArrayList<Room>();
+Worker worker;
+Machine selectedMachine = null;
+
+// Camera System
+PVector camEye, camTarget;
+PVector currentCamEye, currentCamTarget;
+float worldSize = 1400;
+
+void setup() {
+  size(1280, 720, P3D);
+  setWindowFrameTitle("3D Factory Layout & Flow Process Simulator");
+  
+  camEye = new PVector(0, -1100, 900);
+  camTarget = new PVector(0, 0, 0);
+  currentCamEye = camEye.copy();
+  currentCamTarget = camTarget.copy();
+  
+  buildProductLayout();
+}
+
+void draw() {
+  background(15, 20, 25);
+  
+  if (currentMode == 1) {
+    // --- 3D ENVIRONMENT RENDERING ---
+    currentCamEye.lerp(camEye, 0.05);
+    currentCamTarget.lerp(camTarget, 0.05);
+    
+    camera(currentCamEye.x, currentCamEye.y, currentCamEye.z,
+           currentCamTarget.x, currentCamTarget.y, currentCamTarget.z,
+           0, 1, 0);
+           
+    ambientLight(140, 140, 150);
+    directionalLight(255, 255, 255, 0.6, 1, -0.4);
+    pointLight(200, 220, 255, 0, -800, 0);
+    
+    drawFloor();
+    
+    for (Room r : rooms) r.draw();
+    for (Machine m : machines) {
+      m.draw();
+    }
+    
+    // Draw Direct Transfer Line
+    stroke(0, 255, 200, 150);
+    strokeWeight(3);
+    for (int i = 0; i < machines.size() - 1; i++) {
+      line(machines.get(i).opX, 5, machines.get(i).opZ, 
+           machines.get(i+1).opX, 5, machines.get(i+1).opZ);
+    }
+    
+    if (isSimulating) {
+      worker.update();
+    }
+    worker.draw();
+  }
+  
+  // --- 2D OVERLAYS / HUD / TABLES ---
+  hint(DISABLE_DEPTH_TEST);
+  camera(); 
+  noLights();
+  
+  if (currentMode == 1) {
+    drawHUD();
+  } else if (currentMode == 2) {
+    drawSequenceStepsChart();
+  } else if (currentMode == 3) {
+    drawSummaryReportChart();
+  }
+  
+  hint(ENABLE_DEPTH_TEST);
+}
+
+// =========================================================
+// HELPER FOR CROSS-VERSION WINDOW TITLE SUPPORT
+// =========================================================
+
+void setWindowFrameTitle(String title) {
+  try {
+    // Try Processing 4 API
+    java.lang.reflect.Method m = getClass().getMethod("windowTitle", String.class);
+    m.invoke(this, title);
+  } catch (Exception e1) {
+    try {
+      // Fallback to Processing 3 API
+      if (surface != null) {
+        java.lang.reflect.Method m = surface.getClass().getMethod("setTitle", String.class);
+        m.invoke(surface, title);
+      }
+    } catch (Exception e2) {
+      // Safe fallback if window management is restricted by platform
+    }
+  }
+}
+
+// =========================================================
+// INTERACTION & DRAGGING LOGIC
+// =========================================================
+
+void mousePressed() {
+  if (currentMode == 1) {
+    // Check Top Right Navigation Button
+    if (checkButton(width - 240, 20, 220, 50)) {
+      currentMode = 2;
+      return;
+    }
+    
+    // Check HUD Controls
+    if (checkButton(20, 125, 150, 40)) {
+      isSimulating = !isSimulating;
+      return;
+    }
+    if (checkButton(180, 125, 150, 40)) {
+      buildProductLayout();
+      return;
+    }
+    if (checkButton(340, 125, 170, 40)) {
+      jumbleMachinesRandomly();
+      return;
+    }
+    
+    // Dragging Machine Selection (When simulation is stopped)
+    if (!isSimulating) {
+      PVector gPos = getGroundIntersection();
+      for (Machine m : machines) {
+        if (dist(gPos.x, gPos.z, m.x, m.z) < m.radius) {
+          selectedMachine = m;
+          selectedMachine.isDragging = true;
+          break;
+        }
+      }
+    }
+  } else if (currentMode == 2) {
+    if (checkButton(width - 240, 20, 220, 50)) {
+      currentMode = 3;
+    }
+  } else if (currentMode == 3) {
+    if (checkButton(width - 240, 20, 220, 50)) {
+      currentMode = 1;
+    }
+  }
+}
+
+void mouseDragged() {
+  if (currentMode == 1 && selectedMachine != null && !isSimulating) {
+    PVector gPos = getGroundIntersection();
+    // Constrain within factory floor limits
+    float limitX = worldSize * 0.5 - 50;
+    float limitZ = worldSize * 0.15 - 50;
+    selectedMachine.setPosition(constrain(gPos.x, -limitX, limitX), constrain(gPos.z, -limitZ, limitZ));
+    
+    // Reset worker pos to starting machine
+    worker.setPosition(machines.get(0).opX, machines.get(0).opZ);
+  }
+}
+
+void mouseReleased() {
+  if (selectedMachine != null) {
+    selectedMachine.isDragging = false;
+    selectedMachine = null;
+  }
+}
+
+boolean checkButton(float x, float y, float w, float h) {
+  return mouseX >= x && mouseX <= x + w && mouseY >= y && mouseY <= y + h;
+}
+
+// Ray-Plane Intersection (Converts Screen Mouse to 3D Floor Coordinates)
+PVector getGroundIntersection() {
+  float fov = PI/3.0;
+  float cameraZ = (height/2.0) / tan(fov/2.0);
+  float screenX = mouseX - width/2.0;
+  float screenY = mouseY - height/2.0;
+
+  PVector fwd = PVector.sub(currentCamTarget, currentCamEye).normalize();
+  PVector right = fwd.cross(new PVector(0, 1, 0)).normalize();
+  PVector camUp = right.cross(fwd).normalize();
+
+  PVector rayDir = PVector.add(
+    PVector.mult(fwd, cameraZ),
+    PVector.add(PVector.mult(right, screenX), PVector.mult(camUp, -screenY))
+  ).normalize();
+
+  if (abs(rayDir.y) < 0.0001) return new PVector(0, 0, 0);
+  float t = -currentCamEye.y / rayDir.y;
+  return new PVector(currentCamEye.x + t * rayDir.x, currentCamEye.z + t * rayDir.z);
+}
+
+// =========================================================
+// LAYOUT & SIMULATION CONTROLS
+// =========================================================
+
+void buildProductLayout() {
+  machines.clear();
+  rooms.clear();
+  totalDistanceWalked = 0;
+  totalTimeSpent = 0;
+  isSimulating = false;
+  isComplete = false;
+  
+  float spacing = worldSize / 5.5;
+  float startX = -worldSize/2 + spacing/2;
+  
+  rooms.add(new Room(0, 0, worldSize*1.1, worldSize*0.4, "Optimized Line Floor", color(35, 55, 65)));
+  
+  machines.add(new Machine(startX, 0, PI/2, "Storage", 0));
+  machines.add(new Machine(startX + spacing*1, 0, PI/2, "Hacksaw", 1));
+  machines.add(new Machine(startX + spacing*2, 0, PI/2, "Lathe", 2));
+  machines.add(new Machine(startX + spacing*3, 0, PI/2, "Milling", 3));
+  machines.add(new Machine(startX + spacing*4, 0, PI/2, "Inspection", 4));
+  machines.add(new Machine(startX + spacing*5, 0, PI/2, "Storage", 5));
+  
+  worker = new Worker(machines.get(0).opX, machines.get(0).opZ);
+  triggerOutsideView();
+}
+
+void jumbleMachinesRandomly() {
+  isSimulating = false;
+  isComplete = false;
+  totalDistanceWalked = 0;
+  totalTimeSpent = 0;
+  
+  float minX = -worldSize*0.45;
+  float maxX = worldSize*0.45;
+  float minZ = -worldSize*0.12;
+  float maxZ = worldSize*0.12;
+  
+  for (int i = 0; i < machines.size(); i++) {
+    float rx = random(minX, maxX);
+    float rz = random(minZ, maxZ);
+    float rRot = random(0, TWO_PI);
+    machines.get(i).setPosition(rx, rz);
+    machines.get(i).rot = rRot;
+    machines.get(i).updateOpPos();
+  }
+  
+  worker = new Worker(machines.get(0).opX, machines.get(0).opZ);
+}
+
+void triggerInsideView(float mx, float mz, float mRot) {
+  float offsetX = sin(mRot) * 250;
+  float offsetZ = cos(mRot) * 250;
+  camEye.set(mx + offsetX, -180, mz + offsetZ);
+  camTarget.set(mx, -60, mz);
+}
+
+void triggerOutsideView() {
+  camEye.set(0, -1100, 900);
+  camTarget.set(0, 0, 0);
+}
+
+void drawFloor() {
+  pushMatrix();
+  rotateX(HALF_PI);
+  fill(30);
+  noStroke();
+  rectMode(CENTER);
+  rect(0, 0, worldSize*3, worldSize*3);
+  
+  stroke(45);
+  strokeWeight(2);
+  for(float i = -worldSize * 1.5; i <= worldSize * 1.5; i += 100) {
+    line(i, -worldSize*1.5, i, worldSize*1.5);
+    line(-worldSize*1.5, i, worldSize*1.5, i);
+  }
+  popMatrix();
+}
+
+// =========================================================
+// HUD & TABLES
+// =========================================================
+
+void drawHUD() {
+  fill(15, 20, 30, 240);
+  noStroke();
+  rectMode(CORNER);
+  rect(0, 0, width, 185);
+  
+  fill(255);
+  textAlign(LEFT, TOP);
+  textSize(24);
+  text("3D INTERACTIVE PRODUCT LAYOUT SIMULATOR", 20, 15);
+  
+  fill(0, 255, 150);
+  textSize(20);
+  text("Distance Walked: " + nf(totalDistanceWalked, 0, 1) + "m  |  Time Elapsed: " + totalTimeSpent + " min", 20, 50);
+  
+  fill(255, 200, 0);
+  textSize(18);
+  if (worker != null) text("Status: " + worker.statusMsg, 20, 85);
+  
+  // Interactive Controls
+  drawButton(20, 125, 150, 40, isSimulating ? "PAUSE SIM" : "START SIM", color(40, 160, 90));
+  drawButton(180, 125, 150, 40, "RESET LINE", color(180, 80, 40));
+  drawButton(340, 125, 170, 40, "JUMBLE LAYOUT", color(140, 60, 180));
+  
+  drawButton(width - 240, 20, 220, 50, "Process Table >", color(60, 120, 200));
+  
+  fill(200);
+  textSize(14);
+  text("* Click & Drag machines on floor to customize placement before starting simulation.", 530, 140);
+}
+
+void drawSequenceStepsChart() {
+  background(240, 245, 250); 
+  
+  fill(30);
+  textAlign(CENTER, TOP);
+  textSize(26);
+  text("PRODUCT LAYOUT - SEQUENCE OF STEPS (FLOW PROCESS CHART)", width/2, 20);
+  
+  drawButton(width - 240, 20, 220, 50, "Summary Report >", color(60, 120, 200));
+  
+  float tableW = width * 0.92;
+  float tableH = height * 0.75;
+  float tX = width * 0.04;
+  float tY = 85;
+  
+  stroke(0);
+  strokeWeight(2);
+  noFill();
+  rectMode(CORNER);
+  rect(tX, tY, tableW, tableH);
+  
+  // Table Header
+  fill(220, 230, 240);
+  rect(tX, tY, tableW, 40);
+  
+  line(tX, tY + 40, tX + tableW, tY + 40);
+  fill(0);
+  textSize(18);
+  textAlign(CENTER, CENTER);
+  text("Step", tX + 40, tY + 20);
+  text("Symbol", tX + 150, tY + 20);
+  text("Description", tX + width*0.42, tY + 20);
+  text("Distance", tX + tableW - 220, tY + 20);
+  text("Time", tX + tableW - 80, tY + 20);
+  
+  // Calculate dynamic leg distances
+  String d1 = nf(getLegDistance(0, 1), 0, 1) + " m";
+  String d2 = nf(getLegDistance(1, 2), 0, 1) + " m";
+  String d3 = nf(getLegDistance(2, 3), 0, 1) + " m";
+  String d4 = nf(getLegDistance(3, 4), 0, 1) + " m";
+  
+  String[][] rowData = {
+    {"1", "Storage", "Barstock lying in the store", "-", "-"},
+    {"2", "Transport", "Move bar stock to hacksaw", d1, "-"},
+    {"3", "Operation", "Cutting on hacksaw", "-", "4 min"},
+    {"4", "Transport", "Move to lathe machine", d2, "-"},
+    {"5", "Operation", "Turning on lathe", "-", "5 min"},
+    {"6", "Transport", "Move to milling machine", d3, "-"},
+    {"7", "Delay", "Wait for milling machine", "-", "2 min"},
+    {"8", "Operation", "Milling keyway", "-", "10 min"},
+    {"9", "Transport", "Move to inspection bay", d4, "-"},
+    {"10", "Inspection", "Checking dimensions", "-", "2 min"},
+    {"11", "Storage", "Stored in the rack", "-", "-"}
+  };
+  
+  float rowH = (tableH - 80) / 11;
+  
+  for (int i = 0; i < 11; i++) {
+    float y = tY + 40 + (i * rowH);
+    line(tX, y, tX + tableW, y);
+    
+    drawChartIcon(rowData[i][1], tX + 150, y + rowH/2);
+    
+    fill(0);
+    textAlign(CENTER, CENTER);
+    text(rowData[i][0], tX + 40, y + rowH/2);
+    
+    textAlign(LEFT, CENTER);
+    text(rowData[i][2], tX + 240, y + rowH/2);
+    
+    textAlign(CENTER, CENTER);
+    fill(200, 50, 50);
+    text(rowData[i][3], tX + tableW - 220, y + rowH/2);
+    fill(50, 100, 200);
+    text(rowData[i][4], tX + tableW - 80, y + rowH/2);
+  }
+  
+  // Total Row
+  float totalY = tY + tableH - 40;
+  fill(230, 235, 240);
+  rect(tX, totalY, tableW, 40);
+  fill(0);
+  textAlign(CENTER, CENTER);
+  text("TOTAL (CURRENT PRODUCT LAYOUT)", tX + width*0.42, totalY + 20);
+  fill(200, 50, 50); text(nf(totalDistanceWalked, 0, 1) + " meters", tX + tableW - 220, totalY + 20);
+  fill(50, 100, 200); text("23 min", tX + tableW - 80, totalY + 20);
+}
+
+float getLegDistance(int m1, int m2) {
+  if (m1 < machines.size() && m2 < machines.size()) {
+    return dist(machines.get(m1).opX, machines.get(m1).opZ, machines.get(m2).opX, machines.get(m2).opZ) * 0.015;
+  }
+  return 0;
+}
+
+void drawSummaryReportChart() {
+  background(245, 245, 240);
+  
+  fill(30);
+  textAlign(CENTER, TOP);
+  textSize(26);
+  text("FLOW PROCESS CHART REPORT & SUMMARY MATRIX", width/2, 20);
+  
+  drawButton(width - 240, 20, 220, 50, "< 3D Simulation", color(60, 120, 200));
+  
+  // --- LEFT SIDE: VERTICAL PROCESS FLOW DIAGRAM ---
+  float diaX = width * 0.20;
+  float startY = 100;
+  float stepGap = 50;
+  
+  stroke(80);
+  strokeWeight(2);
+  line(diaX, startY + 10, diaX, startY + 9 * stepGap);
+  
+  String[] flowTypes = {"Storage", "Transport", "Operation", "Transport", "Operation", "Transport", "Delay", "Operation", "Inspection", "Storage"};
+  String[][] flowLabels = {
+    {"Lying in Stores", "-"},
+    {"To hacksaw", nf(getLegDistance(0,1),0,1) + " m"},
+    {"Cutting on hacksaw", "4 min"},
+    {"To lathe machine", nf(getLegDistance(1,2),0,1) + " m"},
+    {"Turning on lathe", "5 min"},
+    {"To milling machine", nf(getLegDistance(2,3),0,1) + " m"},
+    {"Waiting for milling machine", "2 min"},
+    {"Milling keyway", "10 min"},
+    {"Checking dimension", "2 min"},
+    {"Stored in the rack", "-"}
+  };
+  
+  for (int i = 0; i < 10; i++) {
+    float y = startY + (i * stepGap);
+    
+    fill(255);
+    stroke(0);
+    ellipse(diaX, y, 22, 22);
+    drawChartIcon(flowTypes[i], diaX + 35, y);
+    
+    fill(0);
+    textAlign(LEFT, CENTER);
+    textSize(15);
+    text(flowLabels[i][0] + " (" + flowLabels[i][1] + ")", diaX + 65, y);
+  }
+  
+  // --- RIGHT SIDE: LAB SUMMARY MATRIX ---
+  float tabX = width * 0.52;
+  float tabY = 120;
+  float tabW = width * 0.44;
+  float tabH = 380;
+  
+  fill(255);
+  stroke(0);
+  strokeWeight(2);
+  rect(tabX, tabY, tabW, tabH);
+  
+  fill(220, 230, 210);
+  rect(tabX, tabY, tabW, 50);
+  fill(0);
+  textAlign(CENTER, CENTER);
+  textSize(17);
+  text("Symbol", tabX + 45, tabY + 25);
+  text("Activity", tabX + 135, tabY + 25);
+  text("Frequency", tabX + 235, tabY + 25);
+  text("Time / Distance", tabX + tabW - 80, tabY + 25);
+  line(tabX, tabY + 50, tabX + tabW, tabY + 50);
+  
+  String[][] summaryData = {
+    {"Operation", "3", "19 min"},
+    {"Transport", "4", nf(totalDistanceWalked, 0, 1) + " meters"},
+    {"Inspection", "1", "2 min"},
+    {"Delay", "1", "2 min"},
+    {"Storage", "2", "-"}
+  };
+  
+  float sRowH = (tabH - 50) / 5;
+  for (int i = 0; i < 5; i++) {
+    float y = tabY + 50 + (i * sRowH);
+    line(tabX, y, tabX + tabW, y);
+    
+    drawChartIcon(summaryData[i][0], tabX + 45, y + sRowH/2);
+    
+    fill(0);
+    textAlign(CENTER, CENTER);
+    text(summaryData[i][0], tabX + 135, y + sRowH/2);
+    text(summaryData[i][1], tabX + 235, y + sRowH/2);
+    fill(0, 100, 200);
+    text(summaryData[i][2], tabX + tabW - 80, y + sRowH/2);
+  }
+}
+
+void drawChartIcon(String type, float x, float y) {
+  stroke(0);
+  strokeWeight(2);
+  noFill();
+  pushMatrix();
+  translate(x - 20, y);
+  
+  if (type.equals("Operation")) ellipse(0, 0, 18, 18);
+  else if (type.equals("Transport")) triangle(-8, -8, 8, 0, -8, 8);
+  else if (type.equals("Inspection")) { rectMode(CENTER); rect(0, 0, 18, 18); }
+  else if (type.equals("Delay")) { arc(0, 0, 18, 18, -PI/2, PI/2); line(0, -9, -9, -9); line(-9, -9, -9, 9); line(-9, 9, 0, 9); }
+  else if (type.equals("Storage")) triangle(-8, -8, 8, -8, 0, 8);
+  
+  popMatrix();
+}
+
+void drawButton(float x, float y, float w, float h, String label, color bg) {
+  fill(bg);
+  stroke(255);
+  strokeWeight(2);
+  rectMode(CORNER);
+  rect(x, y, w, h, 8);
+  
+  fill(255);
+  textAlign(CENTER, CENTER);
+  textSize(16);
+  text(label, x + w/2, y + h/2);
+}
+
+// =========================================================
+// 3D MODEL & ENTITY CLASSES
+// =========================================================
+
+class Room {
+  float x, z, w, d;
+  String name;
+  color col;
+  
+  Room(float _x, float _z, float _w, float _d, String _name, color _c) {
+    x = _x; z = _z; w = _w; d = _d; name = _name; col = _c;
+  }
+  
+  void draw() {
+    pushMatrix();
+    translate(x, 0, z);
+    
+    pushMatrix();
+    rotateX(HALF_PI);
+    fill(col);
+    noStroke();
+    rectMode(CENTER);
+    rect(0, 0, w, d);
+    popMatrix();
+    
+    stroke(150, 180, 220, 80);
+    strokeWeight(4);
+    noFill();
+    translate(0, -50, 0);
+    box(w, 100, d);
+    
+    popMatrix();
+  }
+}
+
+class Machine {
+  float x, z, rot;
+  float opX, opZ;
+  float radius = 70; // Bounding collision radius
+  int id;
+  String type;
+  boolean isDragging = false;
+  
+  Machine(float _x, float _z, float _rot, String _type, int _id) {
+    type = _type;
+    id = _id;
+    rot = _rot;
+    setPosition(_x, _z);
+  }
+  
+  void setPosition(float _x, float _z) {
+    x = _x;
+    z = _z;
+    updateOpPos();
+  }
+  
+  void updateOpPos() {
+    opX = x + sin(rot) * 110;
+    opZ = z + cos(rot) * 110;
+  }
+  
+  void draw() {
+    pushMatrix();
+    translate(x, -5, z);
+    rotateY(rot);
+    
+    if (isDragging) {
+      stroke(255, 255, 0);
+      strokeWeight(3);
+    } else {
+      stroke(30);
+      strokeWeight(1);
+    }
+    
+    if (type.equals("Storage")) {
+      fill(80, 90, 100);
+      translate(0, -75, 0);
+      pushMatrix(); translate(-75, 0, -35); box(10, 150, 10); popMatrix();
+      pushMatrix(); translate(75, 0, -35); box(10, 150, 10); popMatrix();
+      pushMatrix(); translate(-75, 0, 35); box(10, 150, 10); popMatrix();
+      pushMatrix(); translate(75, 0, 35); box(10, 150, 10); popMatrix();
+      fill(120, 130, 140);
+      pushMatrix(); translate(0, 60, 0); box(160, 5, 80); popMatrix();
+      pushMatrix(); translate(0, 0, 0); box(160, 5, 80); popMatrix();
+      pushMatrix(); translate(0, -60, 0); box(160, 5, 80); popMatrix();
+      fill(220, 190, 50);
+      pushMatrix(); translate(0, -5, 0); box(140, 15, 20); popMatrix();
+    } 
+    else if (type.equals("Hacksaw")) {
+      fill(50, 120, 200);
+      translate(0, -35, 0);
+      box(100, 60, 70);
+      fill(100);
+      translate(0, -35, 0);
+      box(80, 10, 60);
+      fill(200, 50, 50);
+      translate(-20, -15, 0);
+      rotateZ(PI/8);
+      box(120, 15, 15);
+      translate(0, -25, 0);
+      fill(255);
+      box(80, 2, 2);
+    } 
+    else if (type.equals("Lathe")) {
+      fill(50, 130, 90);
+      translate(0, -40, 0);
+      box(80, 80, 70);
+      translate(0, -45, 0);
+      fill(180);
+      box(180, 15, 60);
+      fill(100);
+      translate(-70, -35, 0);
+      box(60, 60, 70);
+      translate(45, 0, 0);
+      rotateY(PI/2);
+      fill(80);
+      drawCylinder(16, 25, 30);
+      translate(0, 0, -90);
+      fill(120);
+      box(35, 45, 35);
+      translate(0, 0, 45);
+      translate(-25, 0, 0);
+      fill(50);
+      box(25, 25, 25);
+    } 
+    else if (type.equals("Milling")) {
+      fill(220, 140, 30);
+      translate(0, -25, 0);
+      box(90, 40, 100);
+      translate(0, -80, -30);
+      box(60, 140, 60);
+      translate(0, -60, 40);
+      box(45, 45, 80);
+      translate(0, 40, -10);
+      fill(180);
+      drawCylinder(12, 8, 40);
+      translate(0, 45, 0);
+      fill(150);
+      box(120, 20, 40);
+    } 
+    else if (type.equals("Inspection")) {
+      fill(200);
+      translate(0, -50, 0);
+      box(140, 8, 90);
+      fill(100);
+      translate(-60, 25, -35); box(8, 50, 8);
+      translate(120, 0, 0); box(8, 50, 8);
+      translate(0, 0, 70); box(8, 50, 8);
+      translate(-120, 0, 0); box(8, 50, 8);
+      
+      fill(50, 150, 255);
+      translate(60, -30, -35);
+      box(40, 2, 25);
+      fill(200, 50, 50);
+      translate(20, -2, 0);
+      box(10, 5, 10);
+    }
+    
+    popMatrix();
+    
+    // Operating Pad Indicator
+    pushMatrix();
+    translate(opX, 2, opZ);
+    rotateY(rot);
+    fill(0, 255, 200, 100);
+    noStroke();
+    rectMode(CENTER);
+    rotateX(HALF_PI);
+    rect(0, 0, 50, 50);
+    popMatrix();
+  }
+}
+
+void drawCylinder(int sides, float r, float h) {
+  float angle = TWO_PI / sides;
+  beginShape(TRIANGLE_FAN);
+  vertex(0, 0, h/2);
+  for (int i = 0; i <= sides; i++) vertex(cos(i * angle) * r, sin(i * angle) * r, h/2);
+  endShape();
+  beginShape(TRIANGLE_FAN);
+  vertex(0, 0, -h/2);
+  for (int i = 0; i <= sides; i++) vertex(cos(i * angle) * r, sin(i * angle) * r, -h/2);
+  endShape();
+  beginShape(QUAD_STRIP);
+  for (int i = 0; i <= sides; i++) {
+    float x = cos(i * angle) * r, y = sin(i * angle) * r;
+    vertex(x, y, h/2);
+    vertex(x, y, -h/2);
+  }
+  endShape();
+}
+
+// =========================================================
+// WORKER AGENT WITH OBSTACLE AVOIDANCE
+// =========================================================
+
+class Worker {
+  float x, z;
+  int targetIndex = 1;
+  float speed = 6.0;
+  int workTimer = 0;
+  String statusMsg = "Ready. Click 'START SIM' to begin.";
+  float animPhase = 0;
+  
+  Worker(float startX, float startZ) {
+    setPosition(startX, startZ);
+  }
+  
+  void setPosition(float _x, float _z) {
+    x = _x;
+    z = _z;
+    targetIndex = 1;
+    workTimer = 0;
+    statusMsg = "Ready. Click 'START SIM' to begin.";
+  }
+  
+  void update() {
+    if (isComplete) return;
+    
+    Machine target = machines.get(targetIndex);
+    
+    // Processing / Machine Operation Phase
+    if (workTimer > 0) {
+      workTimer--;
+      animPhase += 0.25;
+      statusMsg = "WORKING: Operating " + target.type + " Station";
+      
+      if (workTimer == 0) {
+        triggerOutsideView();
+        
+        if (target.type.equals("Hacksaw")) totalTimeSpent += 4;
+        else if (target.type.equals("Lathe")) totalTimeSpent += 5;
+        else if (target.type.equals("Milling")) totalTimeSpent += 12; // 10 min operation + 2 min delay
+        else if (target.type.equals("Inspection")) totalTimeSpent += 2;
+        
+        if (targetIndex < machines.size() - 1) {
+          targetIndex++;
+        } else {
+          isComplete = true;
+          isSimulating = false;
+          statusMsg = "Simulation Complete! Check Process Table for metrics.";
+        }
+      }
+      return;
+    }
+    
+    // Steering & Collision Avoidance Logic
+    float distToTarget = dist(x, z, target.opX, target.opZ);
+    statusMsg = "MOVING: Walking to " + target.type + " Station";
+    
+    if (distToTarget > speed) {
+      animPhase += 0.35;
+      
+      // Base Seek Vector
+      PVector desired = new PVector(target.opX - x, target.opZ - z).normalize().mult(speed);
+      PVector avoidance = new PVector(0, 0);
+      
+      // Calculate Obstacle Repulsion to maintain safe distances around machines
+      for (Machine m : machines) {
+        float d = dist(x, z, m.x, m.z);
+        float safeDistance = m.radius + 40; // Machine radius + safe clearance margin
+        
+        if (d < safeDistance && d > 0) {
+          PVector push = new PVector(x - m.x, z - m.z);
+          push.normalize();
+          push.mult((safeDistance - d) * 0.5); // Push intensity proportional to proximity
+          avoidance.add(push);
+        }
+      }
+      
+      // Combine base trajectory with obstacle avoidance vector
+      PVector velocity = PVector.add(desired, avoidance);
+      velocity.normalize().mult(speed);
+      
+      x += velocity.x;
+      z += velocity.z;
+      
+      // Scale velocity to distance metric
+      totalDistanceWalked += (speed * 0.015);
+    } else {
+      x = target.opX;
+      z = target.opZ;
+      workTimer = 180; // 3 seconds station work animation
+      triggerInsideView(target.x, target.z, target.rot);
+    }
+  }
+  
+  void draw() {
+    pushMatrix();
+    translate(x, -45, z);
+    
+    if (workTimer > 0) {
+      rotateY(machines.get(targetIndex).rot + PI);
+    } else if (!isComplete && targetIndex < machines.size()) {
+      rotateY(atan2(machines.get(targetIndex).opX - x, machines.get(targetIndex).opZ - z));
+    }
+    
+    stroke(20);
+    strokeWeight(1);
+    
+    // Body
+    fill(200, 60, 60);
+    box(25, 45, 18);
+    
+    // Hard Hat
+    translate(0, -32, 0);
+    fill(255, 200, 0);
+    sphereDetail(12);
+    sphere(14);
+    
+    // Animated Arms
+    fill(200, 60, 60);
+    float armAngle = sin(animPhase) * 0.6;
+    
+    pushMatrix();
+    translate(-18, 20, 0);
+    rotateX(armAngle);
+    box(10, 35, 10);
+    popMatrix();
+    
+    pushMatrix();
+    translate(18, 20, 0);
+    rotateX(-armAngle);
+    box(10, 35, 10);
+    popMatrix();
+    
+    popMatrix();
+  }
+}
